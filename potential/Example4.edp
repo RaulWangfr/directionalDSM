@@ -1,0 +1,198 @@
+real tmp;
+include "getARGV.idp"
+
+real noiseLevel = getARGV("-noise", 0.05);
+real cx = getARGV("-cx", 0.3);
+real cy = getARGV("-cy", 0.0);
+real rx = getARGV("-rx", 0.1);
+real ry = getARGV("-ry", 0.1);
+real gamma = getARGV("-gamma", 1.0);
+int thetaNum = getARGV("-thetaNum", 1);
+string givenName = getARGV("-givenName", "example4Test");
+
+// 定义区域和网格
+border circle(t=0, 2*pi) {
+    x = cos(t);
+    y = sin(t);
+    label = 1;
+}
+
+int nDirect = 1000;
+int nFine = 300;   // 精细网格
+int nCoarse = 300; // 普通网格
+int nBoundary = 500;
+mesh ThDirect = buildmesh(circle(nDirect));
+mesh ThFine = buildmesh(circle(nFine));
+mesh ThCoarse = buildmesh(circle(nCoarse));
+mesh ThBoundary = buildmesh(circle(nBoundary));
+
+// 定义函数空间
+fespace VhDirect(ThDirect, P1);
+fespace VhFine(ThFine, P1);
+fespace VhCoarse0(ThCoarse, P0);
+fespace VhBoundary(ThBoundary, P0);
+
+int nPlot = 2000;
+mesh Thplot = buildmesh(circle(nPlot));
+
+// 定义圆盘指示函数（内部为正，外部为负）
+func omegaIndicator = min((y - cy)/ ry + 1.0,
+                      min((-0.9510565162951535* (x - cx)/ rx + 0.30901699437494745* (y - cy)/ ry) + 1.0,
+                      min((-0.5877852522924731* (x - cx)/ rx - 0.8090169943749475* (y - cy)/ ry) + 1.0,
+                      min((0.5877852522924731* (x - cx)/ rx - 0.8090169943749475* (y - cy)/ ry) + 1.0,
+                      (0.9510565162951535* (x - cx)/ rx + 0.30901699437494745* (y - cy)/ ry) + 1.0))));
+func u = 20 * (omegaIndicator(x, y) > 0);
+
+int boundaryNum = 0;
+int boundaryFine = 1000;
+for(int i = 0; i < boundaryFine; i++)
+{
+    for(int j = 0; j < boundaryFine; j++){
+        int meanValue = 0;
+        for(int i1 = -1; i1 <= 1; i1++){
+        for(int j1 = -1; j1 <= 1; j1++){
+        if((i1 != 0) || (j1 != 0)){
+            if(omegaIndicator((i+i1)*2.0/boundaryFine-1.0, (j+j1)*2.0/boundaryFine-1.0)>0)
+            {
+                meanValue = meanValue + 1;
+            }
+        }}}
+        if((meanValue == 3) ||(meanValue == 4) || (meanValue == 5)){
+            boundaryNum++;
+        }
+    }
+}
+
+real[int] boundaryX(boundaryNum);
+real[int] boundaryY(boundaryNum);
+int localIndex = 0;
+for(int i = 0; i < boundaryFine; i++)
+{
+    for(int j = 0; j < boundaryFine; j++){
+        int meanValue = 0;
+        for(int i1 = -1; i1 <= 1; i1++){
+        for(int j1 = -1; j1 <= 1; j1++){
+        if((i1 != 0) || (j1 != 0)){
+            if(omegaIndicator((i+i1)*2.0/boundaryFine-1.0, (j+j1)*2.0/boundaryFine-1.0)>0)
+            {
+                meanValue = meanValue + 1;
+            }
+        }}}
+        if((meanValue == 3) ||(meanValue == 4) || (meanValue == 5)){
+            boundaryX(localIndex) = i*2.0/boundaryFine-1.0;
+            boundaryY(localIndex) = j*2.0/boundaryFine-1.0;
+            localIndex++;
+        }
+    }
+}
+
+// 定义绘图空间并计算函数值
+fespace PlotSpace(Thplot, P0);
+PlotSpace pic;
+
+func int plotSave(string filename)
+{
+    ofstream file("./plotfile/" + filename + ".xyz");
+    file << Thplot.nv + boundaryNum << endl;
+    file << filename << endl;
+    for(int i = 0; i < Thplot.nv; i++)
+    {
+        file << 0 << " " << Thplot(i).x << " " << Thplot(i).y << " " 
+             << 0 << " " << pic(Thplot(i).x, Thplot(i).y) << endl;
+    }
+    for(int i = 0; i < boundaryNum; i++)
+    {
+        file << 1 << " " << boundaryX(i) << " " << boundaryY(i) << " " 
+             << 1 << " " << 0.0 << endl;
+    }
+    return 0;
+}
+
+// 边界条件函数
+func g = cos(4*pi*x) + 1.0;
+
+// 在精细网格上求解非齐次问题 y(u)
+VhDirect yUFine;
+{
+    VhDirect v;
+    solve ProblemYu(yUFine, v, solver=Cholesky)
+            = int2d(ThDirect)(dx(yUFine)*dx(v) + dy(yUFine)*dy(v) + u*yUFine*v)
+            - int1d(ThDirect, 1)(g*v);
+}
+
+real alpha = 0.5* noiseLevel^(0.66666666667);
+VhFine yU;
+{
+    VhDirect VhDx = x, VhDy = y;
+    real yUFineMean = int1d(ThDirect, 1)(yUFine)/ int1d(ThDirect, 1)(1.0);
+    real yUFineMax = 0.0; // Initialize with a sufficiently small value
+    for(int i = 0; i < VhDirect.ndof; i++) {
+        if(VhDx[][i]^2 + VhDy[][i]^2 > 0.99){
+            yUFineMax = max(yUFineMax, abs(yUFine[][i] - yUFineMean));
+        }
+    }
+
+    VhFine Vhx = x, Vhy = y;
+    for(int i = 0; i < VhFine.ndof; i++){
+        real noise = (2.0* randreal2() - 1.0)* noiseLevel;
+        yU[][i] = yUFine(Vhx[][i], Vhy[][i]) + yUFineMax* noise;
+    }
+}
+
+real beta = 0.01;
+VhFine yC, v;
+solve ProblemYc(yC, v, solver=Cholesky)
+    = int2d(ThFine)(dx(yC)*dx(v) + dy(yC)*dy(v))
+    + int1d(ThFine, 1)(beta* yC* v)
+    - int1d(ThFine, 1)((g + beta* yU)* v);
+VhFine yErr = yC - yU;
+
+VhFine w;
+solve rDtN(w, v, solver=Cholesky)
+    = int2d(ThFine)(dx(w)*dx(v) + dy(w)*dy(v))
+    + int1d(ThFine)(w* v/ alpha)
+    - int1d(ThFine)(yErr* v/ alpha);
+VhBoundary wnbetaw = dx(w)* x + dy(w)* y + beta* w;
+
+real theta;
+func real hFunc(real xx, real yy){
+    return 1.0 - (cos(theta)* xx + sin(theta)* yy) + 0.05;
+}
+func real dFunc(real xx, real yy){
+    return sin(theta)* xx - cos(theta)* yy;
+}
+
+int oneDirectNum = 400;
+real[int, int] indTheta(thetaNum, oneDirectNum);
+for(int thetaIndex = 0; thetaIndex < thetaNum; thetaIndex++)
+{
+    theta = 2* pi* thetaIndex/ real(thetaNum);
+    for(int oneDirectIndex = 0; oneDirectIndex < oneDirectNum; oneDirectIndex++){
+        real t = 2* oneDirectIndex/ real(oneDirectNum) - 1.0;
+        indTheta(thetaIndex, oneDirectIndex) =
+        int1d(ThBoundary, 1)(wnbetaw* hFunc(x, y)/ (hFunc(x, y)^2.0 + (dFunc(x, y) - t)^2.0));
+    }
+    cout<<thetaIndex<<endl;
+}
+
+VhCoarse0 ind = 100.0;
+VhCoarse0 Vhx = x, Vhy = y;
+for(int i = 0; i < VhCoarse0.ndof; i++){
+    for(int thetaIndex = 0; thetaIndex < thetaNum; thetaIndex++){
+        theta = 2* pi* thetaIndex/ real(thetaNum);
+        real t = dFunc(Vhx[][i], Vhy[][i]);
+        real hx = hFunc(Vhx[][i], Vhy[][i]);
+        int tIndexf = floor(oneDirectNum* (t + 1.0)/ 2.0); tIndexf = max(tIndexf, 0);
+        int tIndexc = ceil(oneDirectNum* (t + 1.0)/ 2.0); tIndexc = min(tIndexc, oneDirectNum - 1);
+        real lambda = 1.0;
+        if(tIndexf != tIndexc){lambda = oneDirectNum* (t + 1.0)/ 2.0 - tIndexf;}
+        real indK = (1.0 - lambda)* indTheta(thetaIndex, tIndexf) + lambda* indTheta(thetaIndex, tIndexc);
+
+        ind[][i] = min(ind[][i], indK* (hx^gamma));
+    }
+}
+
+ind = ind/ ind[].max;
+
+pic = ind;
+plotSave(givenName);
